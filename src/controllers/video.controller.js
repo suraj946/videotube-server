@@ -4,7 +4,8 @@ import {User} from "../models/user.model.js"
 import {ApiError} from "../utils/ApiError.js"
 import {ApiResponse} from "../utils/ApiResponse.js"
 import {asyncHandler} from "../utils/asyncHandler.js"
-import {uploadOnCloudinary} from "../utils/cloudinary.js"
+import {deleteFromCloudinary, uploadOnCloudinary} from "../utils/cloudinary.js"
+import { CLOUD_THUMBNAIL_FOLDER_NAME, CLOUD_VIDEO_FOLDER_NAME } from "../constants.js"
 
 
 const getAllVideos = asyncHandler(async (req, res) => {
@@ -18,7 +19,7 @@ const getAllVideos = asyncHandler(async (req, res) => {
             owner:new mongoose.Types.ObjectId(userId)
         }
     }
-    if(query) {
+    else if(query) {
         matchStage["$match"] = {
             $or:[
                 { title: { $regex: query, $options: 'i' } },
@@ -26,6 +27,10 @@ const getAllVideos = asyncHandler(async (req, res) => {
             ]
         }
     }
+    else {
+        matchStage["$match"] = {}
+    }
+
     if(userId && query){
         matchStage["$match"] = {
             $and:[
@@ -40,32 +45,32 @@ const getAllVideos = asyncHandler(async (req, res) => {
         }
     }
 
-    matchStage["$match"]["pipeline"] = [
-        {
-            $lookup : {
-                from : "users",
-                localField : "owner",
-                foreignField : "_id",
-                as : "owner",
-                pipeline : [
-                    {
-                        $project : {
-                            username : 1,
-                            avatar : 1,
-                            fullname : 1
-                        }
+    const joinOwnerStage = {
+        $lookup : {
+            from : "users",
+            localField : "owner",
+            foreignField : "_id",
+            as : "owner",
+            pipeline : [
+                {
+                    $project : {
+                        username : 1,
+                        avatar : 1,
+                        fullname : 1
                     }
-                ]
-            }
-        },
-        {
-            $addFields : {
-                owner : {
-                    $first : "$owner"
                 }
+            ]
+        }
+    }
+
+    const addFieldStage = {
+        $addFields : {
+            owner : {
+                $first : "$owner"
             }
         }
-    ];
+    }
+        
 
     const sortStage = {};
     if(sortBy && sortType){
@@ -80,8 +85,11 @@ const getAllVideos = asyncHandler(async (req, res) => {
 
     const skipStage = { $skip: (page - 1) * limit };
     const limitStage = { $limit: limit };
+
     const videos = await Video.aggregate([
         matchStage,
+        joinOwnerStage,
+        addFieldStage,
         sortStage,
         skipStage,
         limitStage
@@ -95,9 +103,48 @@ const getAllVideos = asyncHandler(async (req, res) => {
 });
 
 const publishAVideo = asyncHandler(async (req, res) => {
-    const { title, description} = req.body
-    // TODO: get video, upload to cloudinary, create video
-})
+    const { title, description } = req.body
+    if(!title?.trim() || !description?.trim()){
+        throw new ApiError(400, "Title or description is required!!!");
+    }
+    if(!(req.files && Array.isArray(req.files.videoFile) && req.files.videoFile.length > 0)){
+        throw new ApiError(400, "Video file is required!!!");
+    }
+    const videoFileLocalPath = req.files.videoFile[0].path;
+
+    if(!(req.files && Array.isArray(req.files.thumbnail) && req.files.thumbnail.length > 0)){
+        throw new ApiError(400, "Thumbnail of a video is required!!!");
+    }
+    const thumbnailLocalPath = req.files.thumbnail[0].path;
+
+    const uploadedVideo = await uploadOnCloudinary(videoFileLocalPath, CLOUD_VIDEO_FOLDER_NAME);
+    const uploadedThumbnail = await uploadOnCloudinary(thumbnailLocalPath, CLOUD_THUMBNAIL_FOLDER_NAME);
+
+    if(!uploadedVideo || !uploadedThumbnail){
+        throw new ApiError(500, "Something went wrong while uploading video");
+    }
+
+    const videoObj = {
+        videoFile: uploadedVideo.url,
+        thumbnail: uploadedThumbnail.url,
+        title,
+        description,
+        duration: Math.round(uploadedVideo.duration),
+        owner: req.user._id
+    }
+
+    const video = await Video.create(videoObj);
+    if(!video){
+        await deleteFromCloudinary(uploadedVideo.url);
+        await deleteFromCloudinary(uploadedThumbnail.url);
+        throw new ApiError(500, "Something went wrong!!!");
+    }
+    res.status(201).json(new ApiResponse(
+        201,
+        video,
+        "Upload video success"
+    ));
+});
 
 const getVideoById = asyncHandler(async (req, res) => {
     const { videoId } = req.params
