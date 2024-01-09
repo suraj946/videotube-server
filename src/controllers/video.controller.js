@@ -1,11 +1,11 @@
 import mongoose, {isValidObjectId} from "mongoose"
 import {Video} from "../models/video.model.js"
-import {User} from "../models/user.model.js"
 import {ApiError} from "../utils/ApiError.js"
 import {ApiResponse} from "../utils/ApiResponse.js"
 import {asyncHandler} from "../utils/asyncHandler.js"
 import {deleteFromCloudinary, uploadOnCloudinary} from "../utils/cloudinary.js"
 import { CLOUD_THUMBNAIL_FOLDER_NAME, CLOUD_VIDEO_FOLDER_NAME } from "../constants.js"
+import { Like } from "../models/like.model.js"
 
 
 const getAllVideos = asyncHandler(async (req, res) => {
@@ -14,7 +14,7 @@ const getAllVideos = asyncHandler(async (req, res) => {
     limit = isNaN(limit) ? 10 : Number(limit);
 
     const matchStage = {};
-    if(userId){
+    if(userId && isValidObjectId(userId)){
         matchStage["$match"] = {
             owner:new mongoose.Types.ObjectId(userId)
         }
@@ -71,7 +71,6 @@ const getAllVideos = asyncHandler(async (req, res) => {
         }
     }
         
-
     const sortStage = {};
     if(sortBy && sortType){
         sortStage["$sort"] = {
@@ -127,8 +126,8 @@ const publishAVideo = asyncHandler(async (req, res) => {
     const videoObj = {
         videoFile: uploadedVideo.url,
         thumbnail: uploadedThumbnail.url,
-        title,
-        description,
+        title: title.trim(),
+        description: description.trim(),
         duration: Math.round(uploadedVideo.duration),
         owner: req.user._id
     }
@@ -147,24 +146,167 @@ const publishAVideo = asyncHandler(async (req, res) => {
 });
 
 const getVideoById = asyncHandler(async (req, res) => {
-    const { videoId } = req.params
-    //TODO: get video by id
-})
+    const { videoId } = req.params;
+    if(!videoId || !isValidObjectId(videoId)){
+        throw new ApiError(400, "videoId is required or invalid!!");
+    }
+
+    let video = await Video.aggregate([
+        {
+            $match: {
+                _id: new mongoose.Types.ObjectId(videoId)
+            }
+        },
+        {
+            $lookup: {
+                from: "users",
+                localField: "owner",
+                foreignField: "_id",
+                as: "owner",
+                pipeline: [
+                    {
+                        $project: {
+                            username: 1,
+                            fullname: 1,
+                            avatar: 1
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            $lookup: {
+                from: "likes",
+                localField: "_id",
+                foreignField: "video",
+                as: "likes"
+            }
+        },
+        {
+            $addFields: {
+                owner: {
+                    $first: "$owner"
+                },
+                likes: {
+                    $size: "$likes"
+                },
+                views: {
+                    $add: [1, "$views"]
+                }
+            }
+        }
+    ]);
+
+    if(video.length > 0){
+        video = video[0];
+    }
+
+    await Video.findByIdAndUpdate(videoId, {
+        $set:{
+            views: video.views
+        }
+    });
+
+    res.status(200).json(new ApiResponse(
+        200,
+        video,
+        "Get single video success"
+    ));
+});
 
 const updateVideo = asyncHandler(async (req, res) => {
-    const { videoId } = req.params
-    //TODO: update video details like title, description, thumbnail
+    const { videoId } = req.params;
+    if(!videoId?.trim() || !isValidObjectId(videoId)){
+        throw new ApiError(400, "videoId is required or invalid!!");
+    }
+    let video = await Video.findById(videoId);
+    if(!video){
+        throw new ApiError(404, "Video not found to update");
+    }
 
-})
+    const {title, description} = req.body;
+    const fieldsToUpdate = {};
+
+    if(title?.trim()){
+        fieldsToUpdate["title"] = title.trim();
+    }
+    if(description?.trim()){
+        fieldsToUpdate["description"] = description.trim();
+    }
+
+    const thumbnailLocalPath = req.file?.path;
+    if(thumbnailLocalPath){
+        const thumbnail = await uploadOnCloudinary(thumbnailLocalPath, CLOUD_THUMBNAIL_FOLDER_NAME);
+        if(!thumbnail){
+            throw new ApiError(500, "Something went wrong while updating thumbnail!!");
+        }
+        await deleteFromCloudinary(video.thumbnail);
+        fieldsToUpdate["thumbnail"] = thumbnail.url;
+    }
+
+    video = await Video.findByIdAndUpdate(videoId, {
+        $set: {...fieldsToUpdate}
+    }, {new:true});
+
+    res.status(200).json(new ApiResponse(
+        200, 
+        video,
+        "Video details update success"
+    ));
+});
 
 const deleteVideo = asyncHandler(async (req, res) => {
-    const { videoId } = req.params
-    //TODO: delete video
-})
+    //TODO: test it after creating like and comment
+    const { videoId } = req.params;
+    if(!videoId?.trim() || !isValidObjectId(videoId)){
+        throw new ApiError(400, "videoId is required or invalid");
+    }
+
+    const video = await Video.findById(videoId);
+    if(!video){
+        throw new ApiError(404, "Video not found for deletion");
+    }
+
+    const {_id, videoFile, thumbnail} = video;
+    const delResponse = await Video.findByIdAndDelete(_id);
+    if(delResponse){
+        await Promise.all([
+            Like.deleteMany({video: _id}),
+            Comment.deleteMany({video: _id}),
+            deleteFromCloudinary(videoFile),
+            deleteFromCloudinary(thumbnail),
+        ]);
+    }else{
+        throw new ApiError(500, "Something went wrong while deleting video");
+    }
+
+    res.status(200).json(new ApiResponse(
+        200,
+        {},
+        "Video deletion success"
+    ));
+});
 
 const togglePublishStatus = asyncHandler(async (req, res) => {
-    const { videoId } = req.params
-})
+    const { videoId } = req.params;
+    if(!videoId?.trim() || !isValidObjectId(videoId)){
+        throw new ApiError(400, "videoId is required or invalid");
+    }
+
+    let video = await Video.findById(videoId);
+    if(!video){
+        throw new ApiError(404, "Video not found for state updation");
+    }
+
+    video.isPublished = !(video.isPublished);
+    await video.save();
+
+    res.status(200).json(new ApiResponse(
+        200,
+        video,
+        "Video status update success"
+    ));
+});
 
 export {
     getAllVideos,
