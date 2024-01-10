@@ -6,12 +6,19 @@ import {asyncHandler} from "../utils/asyncHandler.js"
 import {deleteFromCloudinary, uploadOnCloudinary} from "../utils/cloudinary.js"
 import { CLOUD_THUMBNAIL_FOLDER_NAME, CLOUD_VIDEO_FOLDER_NAME } from "../constants.js"
 import { Like } from "../models/like.model.js"
+import { Comment } from "../models/comment.model.js"
 
 
 const getAllVideos = asyncHandler(async (req, res) => {
     let { page = 1, limit = 10, query, sortBy, sortType, userId } = req.query;
     page = isNaN(page) ? 1 : Number(page);
     limit = isNaN(limit) ? 10 : Number(limit);
+    if(page <= 0){
+        page = 1;
+    }
+    if(limit <= 0){
+        page = 10;
+    }
 
     const matchStage = {};
     if(userId && isValidObjectId(userId)){
@@ -256,7 +263,6 @@ const updateVideo = asyncHandler(async (req, res) => {
 });
 
 const deleteVideo = asyncHandler(async (req, res) => {
-    //TODO: test it after creating like and comment
     const { videoId } = req.params;
     if(!videoId?.trim() || !isValidObjectId(videoId)){
         throw new ApiError(400, "videoId is required or invalid");
@@ -267,13 +273,17 @@ const deleteVideo = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Video not found for deletion");
     }
 
+    if(video.owner?._id?.toString() !== req.user?._id?.toString()){
+        throw new ApiError(401, "You cannot delete this video");
+    }
+
     const {_id, videoFile, thumbnail} = video;
     const delResponse = await Video.findByIdAndDelete(_id);
     if(delResponse){
         await Promise.all([
             Like.deleteMany({video: _id}),
             Comment.deleteMany({video: _id}),
-            deleteFromCloudinary(videoFile),
+            deleteFromCloudinary(videoFile, "video"),
             deleteFromCloudinary(thumbnail),
         ]);
     }else{

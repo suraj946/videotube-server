@@ -37,7 +37,6 @@ const toggleVideoLike = asyncHandler(async (req, res) => {
 });
 
 const toggleCommentLike = asyncHandler(async (req, res) => {
-    //TODO: test it after creating comment
     const {commentId} = req.params;
     if(!commentId?.trim() || !isValidObjectId(commentId)){
         throw new ApiError(400, "commentId is required or invalid");
@@ -67,7 +66,6 @@ const toggleCommentLike = asyncHandler(async (req, res) => {
 });
 
 const toggleTweetLike = asyncHandler(async (req, res) => {
-    //TODO: test it after creating tweet
     const {tweetId} = req.params;
     if(!tweetId?.trim() || !isValidObjectId(tweetId)){
         throw new ApiError(400, "tweetId is required or invalid");
